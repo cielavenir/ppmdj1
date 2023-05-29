@@ -1342,6 +1342,7 @@ inline BOOL DecodeOneFile(FILE* fpIn)
     ai.FNLen=CLAMP(int(ai.FNLen & 0x1FF),1,260-1);
     fread(WrkStr,ai.FNLen,1,fpIn);          WrkStr[ai.FNLen]=0;
     if ( !TestAccessRare(WrkStr) )          return FALSE;
+
     FILE* fpOut = FOpen(pFName=WrkStr,"wb");
     MaxOrder=(ai.info & 0x0F)+1;            SASize=((ai.info >> 4) & 0xFF)+1;
     DWORD Variant=(ai.info >> 12)+'A';
@@ -1353,6 +1354,15 @@ inline BOOL DecodeOneFile(FILE* fpIn)
     if (ferror(fpOut) || ferror(fpIn) || feof(fpIn)) {
         printf(MTxt[1],WrkStr,WrkStr);      exit(-1);
     }
+
+#ifdef FILEDELTA
+	{
+		FILE *f = fopen("/tmp/__filelist__.txt", "a");
+		fprintf(f, "%s %d\n", WrkStr, ftell(fpOut));
+		fclose(f);
+	}
+#endif
+
     fclose(fpOut);                          EnvSetDateTimeAttr(WrkStr);
     return TRUE;
 }
@@ -1453,23 +1463,86 @@ int main_wrap(const std::vector<std::string> &args){
 	return ret;
 }
 int main(){
+/*
+	with FILEDELTA: 509690729
+	without FILEDELTA: 490251530
+	FILEDELTA made it worse (lol)
+*/
+
 	std::string mode,arcname,dir;
 	std::cin>>mode>>arcname>>dir;
-	chdir(dir.c_str());
+	
 	if(mode=="encode"){
+		chdir(dir.c_str());
 		int N;
 		std::cin>>N;
 		std::vector<std::string>v={"PPMd","e","-m256","-o4","-s1","-f"+arcname};
 		std::vector<std::pair<std::string,int>>args(N);
 		for(int i=0;i<N;i++)std::cin>>args[i].first>>args[i].second;
 		sort(args.begin(),args.end(),[](const auto &x,const auto &y){
-      //return x.first>y.first;
-      if(x.second!=y.second)return x.second<y.second;
-      return x.first>y.first;
-    });
+			//return x.first>y.first;
+			if(x.second!=y.second)return x.second<y.second;
+			return x.first<y.first;
+		});
 		for(int i=0;i<N;i++)v.push_back(args[i].first);
-		return main_wrap(v);
+#ifdef FILEDELTA
+		std::vector<unsigned char> buf;
+		for(auto &arg: args){
+			FILE *fin=fopen(arg.first.c_str(), "rb");
+			std::vector<unsigned char> bufnext(arg.second);
+			if(buf.size() < arg.second)buf.resize(arg.second);
+			fread(bufnext.data(), 1, arg.second, fin);
+			fclose(fin);
+			for(int i=0;i<arg.second;i++){
+				unsigned char t = buf[i];
+				buf[i] = bufnext[i];
+				bufnext[i] -= t;
+			}
+			FILE *fout=fopen((std::string("/tmp/")+arg.first).c_str(), "wb");
+			fwrite(bufnext.data(), 1, arg.second, fout);
+			fclose(fout);
+		}
+		chdir("/tmp");
+#endif
+		int ret = main_wrap(v);
+#ifdef FILEDELTA
+		for(auto &arg: args){
+			unlink((std::string("/tmp/")+arg.first).c_str());
+		}
+#endif
+		return ret;
 	}else if(mode=="decode"){
-		return main_wrap({"PPMd","d",arcname});
+#ifdef FILEDELTA
+		chdir("/tmp");
+		{
+			FILE *f = fopen("/tmp/__filelist__.txt", "w");
+			fclose(f);
+		}
+#else
+		chdir(dir.c_str());
+#endif
+		int ret = main_wrap({"PPMd","d",arcname});
+#ifdef FILEDELTA
+		char fname[256];
+		int siz;
+		FILE *f = fopen("/tmp/__filelist__.txt", "r");
+		std::vector<unsigned char> buf;
+		while(fscanf(f, "%s%d", fname, &siz) >= 2){
+			if(buf.size() < siz)buf.resize(siz);
+			std::vector<unsigned char> bufnext(siz);
+			FILE *fin = fopen(fname, "rb");
+			fread(bufnext.data(), 1, siz, fin);
+			for(int i=0;i<siz;i++){
+				buf[i] += bufnext[i];
+			}
+			FILE *fout = fopen((dir+"/"+fname).c_str(), "wb");
+			fwrite(buf.data(), 1, siz, fout);
+			fclose(fout);
+			fclose(fin);
+			unlink(fname);
+		}
+		fclose(f);
+#endif
+		return ret;
 	}
 }
